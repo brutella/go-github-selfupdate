@@ -29,7 +29,7 @@ type Release struct {
 	// Name represents a name of the release
 	Name string
 	// PublishedAt is the time when the release was published
-	PublishedAt *time.Time
+	PublishedAt time.Time
 	// RepoOwner is the owner of the repository of the release
 	RepoOwner string
 	// RepoName is the name of the repository of the release

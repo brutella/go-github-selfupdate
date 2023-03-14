@@ -92,9 +92,25 @@ func findValidationAsset(rel *github.RepositoryRelease, validationName string) (
 	return nil, false
 }
 
-func findReleaseAndAsset(rels []*github.RepositoryRelease,
-	targetVersion string,
-	filters []*regexp.Regexp, opt options) (*github.RepositoryRelease, *github.ReleaseAsset, semver.Version, bool) {
+func (up *Updater) findAsset(rel *github.RepositoryRelease) *github.ReleaseAsset {
+	// Generate candidates
+	suffixes := make([]string, 0, 2*7*2)
+	for _, sep := range []rune{'_', '-'} {
+		for _, ext := range []string{".zip", ".tar.gz", ".tgz", ".gzip", ".gz", ".tar.xz", ".xz", ""} {
+			suffix := fmt.Sprintf("%s%c%s%s", runtime.GOOS, sep, runtime.GOARCH, ext)
+			suffixes = append(suffixes, suffix)
+			if runtime.GOOS == "windows" {
+				suffix = fmt.Sprintf("%s%c%s.exe%s", runtime.GOOS, sep, runtime.GOARCH, ext)
+				suffixes = append(suffixes, suffix)
+			}
+		}
+	}
+
+	asset, _, _ := findAssetFromRelease(rel, suffixes, "", up.filters, options{pre: up.pre, draft: up.draft})
+	return asset
+}
+
+func findReleaseAndAsset(rels []*github.RepositoryRelease, targetVersion string, filters []*regexp.Regexp, opt options) (*github.RepositoryRelease, *github.ReleaseAsset, semver.Version, bool) {
 	// Generate candidates
 	suffixes := make([]string, 0, 2*7*2)
 	for _, sep := range []rune{'_', '-'} {
@@ -145,15 +161,8 @@ func (up *Updater) DetectLatest(slug string) (release *Release, found bool, err 
 	return up.DetectVersion(slug, "")
 }
 
-// DetectVersion tries to get the given version of the repository on Github. `slug` means `owner/name` formatted string.
-// And version indicates the required version.
-func (up *Updater) DetectVersion(slug string, version string) (release *Release, found bool, err error) {
-	repo := strings.Split(slug, "/")
-	if len(repo) != 2 || repo[0] == "" || repo[1] == "" {
-		return nil, false, fmt.Errorf("Invalid slug format. It should be 'owner/name': %s", slug)
-	}
-
-	rels, res, err := up.api.Repositories.ListReleases(up.apiCtx, repo[0], repo[1], nil)
+func (up *Updater) fetchReleases(owner, name string) ([]*github.RepositoryRelease, error) {
+	rels, res, err := up.api.Repositories.ListReleases(up.apiCtx, owner, name, nil)
 	if err != nil {
 		log.Println("API returned an error response:", err)
 		if res != nil && res.StatusCode == 404 {
@@ -161,6 +170,68 @@ func (up *Updater) DetectVersion(slug string, version string) (release *Release,
 			err = nil
 			log.Println("API returned 404. Repository or release not found")
 		}
+		return nil, err
+	}
+	return rels, nil
+}
+
+// ListReleases returns a list of releases of the repository on GitHub. Only releases with an asset of the current
+// platform are included.
+func (up *Updater) ListReleases(slug string) ([]*Release, error) {
+	owner, name, err := parseSlug(slug)
+	if err != nil {
+		return nil, err
+	}
+
+	rels, err := up.fetchReleases(owner, name)
+	if err != nil {
+		return nil, err
+	}
+
+	var tmp []*Release
+	for _, rel := range rels {
+		asset := up.findAsset(rel)
+		if asset == nil {
+			continue
+		}
+
+		v, err := semver.Parse(rel.GetTagName())
+		if err != nil {
+			log.Println("update:", err)
+			continue
+		}
+
+		r := &Release{
+			v,
+			rel.GetPrerelease(),
+			rel.GetDraft(),
+			asset.GetBrowserDownloadURL(),
+			asset.GetSize(),
+			asset.GetID(),
+			-1,
+			rel.GetHTMLURL(),
+			rel.GetBody(),
+			rel.GetName(),
+			rel.GetPublishedAt().Time,
+			owner,
+			name,
+		}
+		tmp = append(tmp, r)
+	}
+
+	return tmp, nil
+}
+
+// DetectVersion tries to get the given version of the repository on Github. `slug` means `owner/name` formatted string.
+// And version indicates the required version.
+func (up *Updater) DetectVersion(slug string, version string) (release *Release, found bool, err error) {
+	owner, name, err := parseSlug(slug)
+	if err != nil {
+		return nil, false, err
+	}
+
+	rels, err := up.fetchReleases(owner, name)
+	if err != nil {
 		return nil, false, err
 	}
 
@@ -173,7 +244,6 @@ func (up *Updater) DetectVersion(slug string, version string) (release *Release,
 	url := asset.GetBrowserDownloadURL()
 	log.Println("Successfully fetched the latest release. tag:", rel.GetTagName(), ", name:", rel.GetName(), ", URL:", rel.GetURL(), ", Asset:", url)
 
-	publishedAt := rel.GetPublishedAt().Time
 	release = &Release{
 		ver,
 		rel.GetPrerelease(),
@@ -185,9 +255,9 @@ func (up *Updater) DetectVersion(slug string, version string) (release *Release,
 		rel.GetHTMLURL(),
 		rel.GetBody(),
 		rel.GetName(),
-		&publishedAt,
-		repo[0],
-		repo[1],
+		rel.GetPublishedAt().Time,
+		owner,
+		name,
 	}
 
 	if up.validator != nil {
@@ -211,4 +281,17 @@ func DetectLatest(slug string) (*Release, bool, error) {
 // DetectVersion detects the given release of the slug (owner/repo) from its version.
 func DetectVersion(slug string, version string) (*Release, bool, error) {
 	return DefaultUpdater().DetectVersion(slug, version)
+}
+
+func parseSlug(slug string) (owner string, name string, err error) {
+	repo := strings.Split(slug, "/")
+	if len(repo) != 2 || repo[0] == "" || repo[1] == "" {
+		err = fmt.Errorf("Invalid slug format. It should be 'owner/name': %s", slug)
+		return
+	}
+
+	owner = repo[0]
+	name = repo[1]
+
+	return
 }
