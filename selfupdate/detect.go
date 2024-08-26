@@ -56,19 +56,15 @@ func findAssetFromRelease(rel *github.RepositoryRelease,
 	for _, asset := range rel.Assets {
 		name := asset.GetName()
 		if len(filters) > 0 {
-			// if some filters are defined, match them: if any one matches, the asset is selected
-			matched := false
 			for _, filter := range filters {
 				if filter.MatchString(name) {
 					log.Println("Selected filtered asset", name)
-					matched = true
-					break
+					return asset, ver, true
 				}
 				log.Printf("Skipping asset %q not matching filter %v\n", name, filter)
 			}
-			if !matched {
-				continue
-			}
+
+			return nil, semver.Version{}, false
 		}
 
 		for _, s := range suffixes {
