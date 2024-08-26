@@ -3,10 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/rhysd/go-github-selfupdate/selfupdate"
 	"os"
 	"regexp"
 	"strings"
+
+	"github.com/rhysd/go-github-selfupdate/selfupdate"
 )
 
 func usage() {
